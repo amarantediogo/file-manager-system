@@ -27,6 +27,11 @@ typedef struct
 
 static FileDescriptor openFiles[MAX_FDS];
 static int initialized = 0;
+static int myfsMounted = 0;
+static unsigned int sbBlockSize = 0;
+static unsigned int sbNumInodes = 0;
+static unsigned int sbFirstDataSector = 0;
+static unsigned int sbTotalBlocks = 0;
 
 // Funcoes auxiliares
 
@@ -60,78 +65,72 @@ int myFSIsIdle (Disk *d) {
 //blocos disponiveis no disco, se formatado com sucesso. Caso contrario,
 //retorna -1.
 int myFSFormat (Disk *d, unsigned int blockSize) {
-	if (!d || blockSize == 0) {
+	if (!d) return -1;
+	// Aceitamos apenas blockSize que caiba inteiro em um setor
+	if (blockSize == 0 || blockSize > DISK_SECTORDATASIZE ||
+	    (DISK_SECTORDATASIZE % blockSize) != 0) {
 		return -1;
 	}
 
-	unsigned long diskSize = diskGetSize(d);
 	unsigned long numSectors = diskGetNumSectors(d);
-	
-	// Criar superbloco no setor 0
-	unsigned char superblockSector[DISK_SECTORDATASIZE];
-	
-	// Limpar o setor
+	unsigned int inodesPerSector = inodeNumInodesPerSector();
+	unsigned int numInodes = 256;
+	unsigned int numInodeSectors = (numInodes + inodesPerSector - 1) / inodesPerSector;
+	unsigned long firstDataSector = inodeAreaBeginSector() + numInodeSectors;
+
+	// Checar se ha espaco util
+	if (numSectors <= firstDataSector) return -1;
+
+	unsigned char superblock[DISK_SECTORDATASIZE];
+	unsigned char zeroBuf[DISK_SECTORDATASIZE];
 	for (int i = 0; i < DISK_SECTORDATASIZE; i++) {
-		superblockSector[i] = 0;
+		superblock[i] = 0;
+		zeroBuf[i] = 0;
 	}
-	
-	// Guardar o blockSize no superbloco (primeiros 4 bytes)
-	ul2char(blockSize, superblockSector);
-	
-	// Escrever o superbloco no setor 0
-	if (diskWriteSector(d, 0, superblockSector) != 0) {
-		return -1;
+
+	// Superbloco: assinatura e metadados basicos
+	superblock[0] = 'M'; superblock[1] = 'Y'; superblock[2] = 'F'; superblock[3] = 'S';
+	ul2char(blockSize, &superblock[4]);
+	ul2char(numInodes, &superblock[8]);
+	ul2char(firstDataSector, &superblock[12]);
+
+	if (diskWriteSector(d, 0, superblock) != 0) return -1;
+
+	// Setor 1 reservado/bitmap: zera
+	if (diskWriteSector(d, 1, zeroBuf) != 0) return -1;
+
+	// Zerar area de i-nodes
+	for (unsigned int s = 0; s < numInodeSectors; s++) {
+		if (diskWriteSector(d, inodeAreaBeginSector() + s, zeroBuf) != 0) return -1;
 	}
-	
-	// Criar i-node raiz (número 0) - um diretório vazio
-	Inode *rootInode = inodeCreate(0, d);
-	if (!rootInode) {
-		return -1;
-	}
-	
-	// Configurar o i-node raiz como diretório
+
+	// Criar i-node raiz (numero 1)
+	Inode *rootInode = inodeCreate(1, d);
+	if (!rootInode) return -1;
+
 	inodeSetFileType(rootInode, FILETYPE_DIR);
 	inodeSetFileSize(rootInode, 0);
 	inodeSetOwner(rootInode, 0);
 	inodeSetGroupOwner(rootInode, 0);
 	inodeSetPermission(rootInode, 0777);
 	inodeSetRefCount(rootInode, 1);
-	
-	// Salvar o i-node raiz
+
 	if (inodeSave(rootInode) != 0) {
+		free(rootInode);
 		return -1;
 	}
-	
-	// Calcular o número de blocos disponíveis
-	// Setor 0: Superbloco
-	// Setor 1: Reservado/Bitmap de blocos livres (se necessário)
-	// Setor 2+: I-nodes
-	
-	// Encontrar quantos setores estão disponíveis para dados após os i-nodes
-	unsigned int inodesPerSector = inodeNumInodesPerSector();
-	unsigned int numInodes = 256; // Número máximo de i-nodes suportados
-	unsigned int numInodeSectors = (numInodes + inodesPerSector - 1) / inodesPerSector;
-	
-	// Primeiro setor de blocos de dados
-	unsigned long firstDataSector = inodeAreaBeginSector() + numInodeSectors;
-	
-	// Número de setores disponíveis para dados
-	unsigned long availableSectors = (numSectors > firstDataSector) ? 
-	                                  (numSectors - firstDataSector) : 0;
-	
-	// Convertendo setores em blocos de dados
+	free(rootInode);
+
+	// Calcular blocos disponiveis
+	unsigned long availableSectors = numSectors - firstDataSector;
 	unsigned long blocksPerSector = DISK_SECTORDATASIZE / blockSize;
-	if (blocksPerSector == 0) {
-		blocksPerSector = 1;
-	}
-	
 	unsigned long totalBlocks = availableSectors * blocksPerSector;
-	
-	// Garantir que temos pelo menos um bloco disponível
-	if (totalBlocks <= 0) {
-		return -1;
-	}
-	
+	if (totalBlocks == 0) return -1;
+
+	// Persistir totalBlocks no superbloco
+	ul2char((unsigned int)totalBlocks, &superblock[16]);
+	if (diskWriteSector(d, 0, superblock) != 0) return -1;
+
 	return (int)totalBlocks;
 }
 
@@ -141,6 +140,33 @@ int myFSFormat (Disk *d, unsigned int blockSize) {
 //de gravacao devem ser persistidos no disco. Retorna um positivo se a
 //montagem ou desmontagem foi bem sucedida ou, caso contrario, 0.
 int myFSxMount (Disk *d, int x) {
+	if (!d) return 0;
+	if (x == 1) {
+		unsigned char sector[DISK_SECTORDATASIZE];
+		if (diskReadSector(d, 0, sector) != 0) return 0;
+		if (sector[0] != 'M' || sector[1] != 'Y' || sector[2] != 'F' || sector[3] != 'S') return 0;
+		unsigned int bs = 0, nin = 0, fds = 0, tb = 0;
+		char2ul(&sector[4], &bs);
+		char2ul(&sector[8], &nin);
+		char2ul(&sector[12], &fds);
+		char2ul(&sector[16], &tb);
+		if (bs == 0 || bs > DISK_SECTORDATASIZE || (DISK_SECTORDATASIZE % bs) != 0) return 0;
+		unsigned long ns = diskGetNumSectors(d);
+		if (fds >= ns) return 0;
+		sbBlockSize = bs;
+		sbNumInodes = nin;
+		sbFirstDataSector = fds;
+		sbTotalBlocks = tb;
+		myfsMounted = 1;
+		initFileDescriptors();
+		return 1;
+	}
+	else if (x == 0) {
+		if (!myfsMounted) return 0;
+		myfsMounted = 0;
+		sbBlockSize = sbNumInodes = sbFirstDataSector = sbTotalBlocks = 0;
+		return 1;
+	}
 	return 0;
 }
 

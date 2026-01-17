@@ -1,8 +1,2 @@
-disk.*
-inode.*
-main.c
-myfs.h
-util.*
-vfs.*
-
-.DS_Store
+*
+!myfs.c

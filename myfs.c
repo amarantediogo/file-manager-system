@@ -60,7 +60,79 @@ int myFSIsIdle (Disk *d) {
 //blocos disponiveis no disco, se formatado com sucesso. Caso contrario,
 //retorna -1.
 int myFSFormat (Disk *d, unsigned int blockSize) {
-	return -1;
+	if (!d || blockSize == 0) {
+		return -1;
+	}
+
+	unsigned long diskSize = diskGetSize(d);
+	unsigned long numSectors = diskGetNumSectors(d);
+	
+	// Criar superbloco no setor 0
+	unsigned char superblockSector[DISK_SECTORDATASIZE];
+	
+	// Limpar o setor
+	for (int i = 0; i < DISK_SECTORDATASIZE; i++) {
+		superblockSector[i] = 0;
+	}
+	
+	// Guardar o blockSize no superbloco (primeiros 4 bytes)
+	ul2char(blockSize, superblockSector);
+	
+	// Escrever o superbloco no setor 0
+	if (diskWriteSector(d, 0, superblockSector) != 0) {
+		return -1;
+	}
+	
+	// Criar i-node raiz (número 0) - um diretório vazio
+	Inode *rootInode = inodeCreate(0, d);
+	if (!rootInode) {
+		return -1;
+	}
+	
+	// Configurar o i-node raiz como diretório
+	inodeSetFileType(rootInode, FILETYPE_DIR);
+	inodeSetFileSize(rootInode, 0);
+	inodeSetOwner(rootInode, 0);
+	inodeSetGroupOwner(rootInode, 0);
+	inodeSetPermission(rootInode, 0777);
+	inodeSetRefCount(rootInode, 1);
+	
+	// Salvar o i-node raiz
+	if (inodeSave(rootInode) != 0) {
+		return -1;
+	}
+	
+	// Calcular o número de blocos disponíveis
+	// Setor 0: Superbloco
+	// Setor 1: Reservado/Bitmap de blocos livres (se necessário)
+	// Setor 2+: I-nodes
+	
+	// Encontrar quantos setores estão disponíveis para dados após os i-nodes
+	unsigned int inodesPerSector = inodeNumInodesPerSector();
+	unsigned int numInodes = 256; // Número máximo de i-nodes suportados
+	unsigned int numInodeSectors = (numInodes + inodesPerSector - 1) / inodesPerSector;
+	
+	// Primeiro setor de blocos de dados
+	unsigned long firstDataSector = inodeAreaBeginSector() + numInodeSectors;
+	
+	// Número de setores disponíveis para dados
+	unsigned long availableSectors = (numSectors > firstDataSector) ? 
+	                                  (numSectors - firstDataSector) : 0;
+	
+	// Convertendo setores em blocos de dados
+	unsigned long blocksPerSector = DISK_SECTORDATASIZE / blockSize;
+	if (blocksPerSector == 0) {
+		blocksPerSector = 1;
+	}
+	
+	unsigned long totalBlocks = availableSectors * blocksPerSector;
+	
+	// Garantir que temos pelo menos um bloco disponível
+	if (totalBlocks <= 0) {
+		return -1;
+	}
+	
+	return (int)totalBlocks;
 }
 
 //Funcao para montagem/desmontagem do sistema de arquivos, se possível.

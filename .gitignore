@@ -2,5 +2,7 @@ disk.*
 inode.*
 main.c
 myfs.h
-utilt.*
+util.*
 vfs.*
+
+.DS_Store

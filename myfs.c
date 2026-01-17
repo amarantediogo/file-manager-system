@@ -16,15 +16,43 @@
 #include "util.h"
 
 //Declaracoes globais
-//...
-//...
 
+// Estrutura para representar um descritor de arquivo aberto
+typedef struct
+{
+	int used;
+	unsigned int inumber;
+	unsigned int cursor;
+} FileDescriptor;
+
+static FileDescriptor openFiles[MAX_FDS];
+static int initialized = 0;
+
+// Funcoes auxiliares
+
+// Funcao para inicializar a tabela de descritores de arquivos
+static void initFileDescriptors() {
+    if (!initialized) {
+        for (int i = 0; i < MAX_FDS; i++) {
+            openFiles[i].used = 0;
+            openFiles[i].inumber = 0;
+            openFiles[i].cursor = 0;
+        }
+        initialized = 1;
+    }
+}
 
 //Funcao para verificacao se o sistema de arquivos está ocioso, ou seja,
 //se nao ha quisquer descritores de arquivos em uso atualmente. Retorna
 //um positivo se ocioso ou, caso contrario, 0.
 int myFSIsIdle (Disk *d) {
-	return 0;
+    initFileDescriptors();
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (openFiles[i].used) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 //Funcao para formatacao de um disco com o novo sistema de arquivos

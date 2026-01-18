@@ -1,21 +1,22 @@
 /*
-*  myfs.c - Implementacao do sistema de arquivos MyFS
-*
-*  Autores: SUPER_PROGRAMADORES_C
-*  Projeto: Trabalho Pratico II - Sistemas Operacionais
-*  Organizacao: Universidade Federal de Juiz de Fora
-*  Departamento: Dep. Ciencia da Computacao
-*
-*/
+ *  myfs.c - Implementacao do sistema de arquivos MyFS
+ *
+ *  Autores: SUPER_PROGRAMADORES_C
+ *  Projeto: Trabalho Pratico II - Sistemas Operacionais
+ *  Organizacao: Universidade Federal de Juiz de Fora
+ *  Departamento: Dep. Ciencia da Computacao
+ *
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "myfs.h"
 #include "vfs.h"
 #include "inode.h"
 #include "util.h"
 
-//Declaracoes globais
+// Declaracoes globais
 
 // Estrutura para representar um descritor de arquivo aberto
 typedef struct
@@ -39,25 +40,25 @@ static unsigned int sbTotalBlocks = 0;
 static void initFileDescriptors() {
     if (!initialized) {
         for (int i = 0; i < MAX_FDS; i++) {
-            openFiles[i].used = 0;
-            openFiles[i].inumber = 0;
-            openFiles[i].cursor = 0;
-        }
-        initialized = 1;
-    }
+			openFiles[i].used = 0;
+			openFiles[i].inumber = 0;
+			openFiles[i].cursor = 0;
+		}
+		initialized = 1;
+	}
 }
 
 //Funcao para verificacao se o sistema de arquivos está ocioso, ou seja,
 //se nao ha quisquer descritores de arquivos em uso atualmente. Retorna
 //um positivo se ocioso ou, caso contrario, 0.
 int myFSIsIdle (Disk *d) {
-    initFileDescriptors();
+	initFileDescriptors();
     for (int i = 0; i < MAX_FDS; i++) {
         if (openFiles[i].used) {
-            return 0;
-        }
-    }
-    return 1;
+			return 0;
+		}
+	}
+	return 1;
 }
 
 //Funcao para formatacao de um disco com o novo sistema de arquivos
@@ -177,7 +178,7 @@ int myFSxMount (Disk *d, int x) {
 int myFSOpen (Disk *d, const char *path) {
 	return -1;
 }
-	
+
 //Funcao para a leitura de um arquivo, a partir de um descritor de arquivo
 //existente. Os dados devem ser lidos a partir da posicao atual do cursor
 //e copiados para buf. Terao tamanho maximo de nbytes. Ao fim, o cursor
@@ -245,10 +246,39 @@ int myFSCloseDir (int fd) {
 	return -1;
 }
 
-//Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
-//ao virtual FS (vfs). Retorna um identificador unico (slot), caso
-//o sistema de arquivos tenha sido registrado com sucesso.
-//Caso contrario, retorna -1
-int installMyFS (void) {
-	return -1;
+// Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
+// ao virtual FS (vfs). Retorna um identificador unico (slot), caso
+// o sistema de arquivos tenha sido registrado com sucesso.
+// Caso contrario, retorna -1
+int installMyFS(void)
+{
+	static FSInfo fs;			   // Persistente
+	static char fsname[] = "myfs"; // Persistente
+
+	// Zerar toda a estrutura
+	memset(&fs, 0, sizeof(FSInfo));
+
+	// DEFINIÇÃO DO FSID
+	fs.fsid = 0;
+	fs.fsname = fsname;
+
+	// Funções basicas
+	fs.isidleFn = myFSIsIdle;
+	fs.formatFn = myFSFormat;
+	fs.xMountFn = myFSxMount;
+
+	// Arquivos
+	fs.openFn = myFSOpen;
+	fs.readFn = myFSRead;
+	fs.writeFn = myFSWrite;
+	fs.closeFn = myFSClose;
+
+	if (vfsRegisterFS(&fs) < 0)
+	{
+		printf("Falha ao registrar o MyFS no VFS.\n");
+		return -1;
+	}
+
+	printf("MyFS registrado com sucesso (fsid = %d).\n", fs.fsid);
+	return fs.fsid;
 }

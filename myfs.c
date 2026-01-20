@@ -398,7 +398,7 @@ int myFSOpen(Disk *d, const char *path)
       openFiles[i].used = 1;
       openFiles[i].inumber = inumber;
       openFiles[i].cursor = 0;
-      return i + 1; 
+      return i + 1;
     }
   }
 
@@ -423,7 +423,27 @@ int myFSWrite(int fd, const char *buf, unsigned int nbytes) { return -1; }
 
 // Funcao para fechar um arquivo, a partir de um descritor de arquivo
 // existente. Retorna 0 caso bem sucedido, ou -1 caso contrario
-int myFSClose(int fd) { return -1; }
+int myFSClose(int fd)
+{
+  //Verifica se o descritor é válido (FDs começam em 1)
+  if (fd <= 0 || fd > MAX_FDS)
+    return -1;
+
+  int index = fd - 1;
+
+  //Verifica se o arquivo realmente está aberto
+  if (!openFiles[index].used)
+    return -1;
+
+  //Zera o cursor
+  openFiles[index].cursor = 0;
+
+  //Libera o descritor
+  openFiles[index].used = 0;
+  openFiles[index].inumber = 0;
+
+  return 0;
+}
 
 // Funcao para abertura de um diretorio, a partir do caminho
 // especificado em path, no disco indicado por d, no modo Read/Write,

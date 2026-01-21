@@ -459,7 +459,97 @@ int myFSOpen(Disk *d, const char *path) {
 // deve ter posicao atualizada para que a proxima operacao ocorra a partir
 // do próximo byte apos o ultimo lido. Retorna o numero de bytes
 // efetivamente lidos em caso de sucesso ou -1, caso contrario.
-int myFSRead(int fd, char *buf, unsigned int nbytes) { return -1; }
+int myFSRead(int fd, char *buf, unsigned int nbytes)
+{
+  if (!myfsMounted)
+    return -1;
+
+  initFileDescriptors();
+
+  if (fd <= 0 || fd > MAX_FDS || buf == NULL)
+    return -1;
+
+  int idx = fd - 1;
+  if (!openFiles[idx].used)
+    return -1;
+
+  if (nbytes == 0)
+    return 0;
+
+  Disk *d = openFiles[idx].disk;
+  if (!d) return -1;
+
+  unsigned int inumber = openFiles[idx].inumber;
+
+  Inode *inode = inodeLoad(inumber, d);
+  if (!inode)
+    return -1;
+
+  SuperBlock sb;
+  if (readSuperBlock(d, &sb) != 0)
+  {
+    free(inode);
+    return -1;
+  }
+
+  unsigned int fileSize = inodeGetFileSize(inode);
+  // unsigned int cursor = openFiles[idx].cursor;
+  unsigned int cursor = 0;
+
+  if (cursor >= fileSize)
+  {
+    free(inode);
+    return 0; // EOF
+  }
+
+  unsigned int canRead = fileSize - cursor;
+  unsigned int toRead = (nbytes < canRead) ? nbytes : canRead;
+
+  unsigned int blockSize = sb.blockSize;
+  unsigned int readBytes = 0;
+
+  unsigned char *blockBuf = (unsigned char *)malloc(blockSize);
+  if (!blockBuf)
+  {
+    free(inode);
+    return -1;
+  }
+
+  while (readBytes < toRead)
+  {
+    unsigned int pos = cursor + readBytes;
+    unsigned int blockIndex = pos / blockSize;
+    unsigned int offInBlock = pos % blockSize;
+
+    unsigned long int blockAddr = inodeGetBlockAddr(inode, blockIndex);
+    if (blockAddr == 0)
+    {
+      free(blockBuf);
+      free(inode);
+      return -1;
+    }
+
+    if (readBlock(d, blockAddr, blockSize, blockBuf) != 0)
+    {
+      free(blockBuf);
+      free(inode);
+      return -1;
+    }
+
+    unsigned int remaining = toRead - readBytes;
+    unsigned int chunk = blockSize - offInBlock;
+    if (chunk > remaining)
+      chunk = remaining;
+
+    memcpy(buf + readBytes, blockBuf + offInBlock, chunk);
+    readBytes += chunk;
+  }
+
+  free(blockBuf);
+
+  free(inode);
+  return (int)readBytes;
+}
 
 // Funcao para a escrita de um arquivo, a partir de um descritor de arquivo
 // existente. Os dados de buf sao copiados para o disco a partir da posição

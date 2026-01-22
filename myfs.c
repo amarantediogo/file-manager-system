@@ -638,8 +638,7 @@ int myFSRead(int fd, char *buf, unsigned int nbytes)
   }
 
   unsigned int fileSize = inodeGetFileSize(inode);
-  // unsigned int cursor = openFiles[idx].cursor;
-  unsigned int cursor = 0;
+  unsigned int cursor = openFiles[idx].cursor;
 
   if (cursor >= fileSize)
   {
@@ -692,6 +691,8 @@ int myFSRead(int fd, char *buf, unsigned int nbytes)
 
   free(blockBuf);
   
+  openFiles[idx].cursor += readBytes;
+
   free(inode);
   return (int)readBytes;
 }

@@ -1,7 +1,7 @@
 /*
  *  myfs.c - Implementacao do sistema de arquivos MyFS
  *
- *  Autores: SUPER_PROGRAMADORES_C
+ *  Autores: Caio Louback, Diogo Carminatti, João Auusto Pilato, Karen Jardim
  *  Projeto: Trabalho Pratico II - Sistemas Operacionais
  *  Organizacao: Universidade Federal de Juiz de Fora
  *  Departamento: Dep. Ciencia da Computacao
@@ -114,20 +114,16 @@ static int readSuperBlock(Disk *d, SuperBlock *sb) {
       sector[3] != 'S')
     return -1;
 
-  // Formatação escreveu: "MYFS" + struct SuperBlock a partir do offset 4
   memcpy(sb, &sector[4], sizeof(SuperBlock));
   return 0;
 }
 
-// Aloca 1 bloco (cluster) usando a free list encadeada no início de cada
-// cluster. Retorna o endereço (setor inicial do cluster) ou 0 em erro.
 static unsigned long int allocateFreeCluster(Disk *d, SuperBlock *sb) {
   if (sb->firstFreeClusterAddress == 0)
     return 0;
 
   unsigned long int allocated = sb->firstFreeClusterAddress;
 
-  // Lê o header do cluster livre para descobrir o próximo livre
   unsigned char sector0[DISK_SECTORDATASIZE];
   if (diskReadSector(d, allocated, sector0) != 0)
     return 0;
@@ -136,14 +132,11 @@ static unsigned long int allocateFreeCluster(Disk *d, SuperBlock *sb) {
   memset(&hdr, 0, sizeof(hdr));
   memcpy(&hdr.nextClusterAddress, sector0, sizeof(unsigned long int));
 
-  // Atualiza cabeça da free list
   sb->firstFreeClusterAddress = hdr.nextClusterAddress;
 
-  // Persistir superbloco com a nova cabeça
   if (writeSuperBlock(d, sb) != 0)
     return 0;
 
-  // (Opcional) “limpar” o primeiro setor do cluster alocado
   memset(sector0, 0, sizeof(sector0));
   if (diskWriteSector(d, allocated, sector0) != 0)
     return 0;
@@ -174,7 +167,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
   printf("\n   Disk size: %lu bytes", diskGetSize(d));
   SLEEP(1000);
 
-  // ========== VALIDACAO DE PARAMETROS ==========
   if (!d) {
     printf("\n!! Error: Invalid disk pointer (NULL). Disk ID: %d\n",
            diskGetId(d));
@@ -194,12 +186,9 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     return -1;
   }
 
-  // ========== CALCULO DE LAYOUT DO DISCO ==========
   unsigned long totalSectors = diskGetNumSectors(d);
   unsigned long diskSize = diskGetSize(d);
 
-  // Calcula quantos inodes serão criados no disco
-  // Usa uma proporção razoável: 1 inode a cada 8 blocos de dados
   unsigned int blocksInDisk = totalSectors / (blockSize / DISK_SECTORDATASIZE);
   unsigned int numInodes = blocksInDisk / 8;
   if (numInodes < 8) {
@@ -217,20 +206,18 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     return -1;
   }
 
-  // Calcula onde começa a area de dados (após superbloco e inodes)
+ 
   unsigned int inodesBeginSector = inodeAreaBeginSector();
   unsigned int inodesSectors =
       (numInodes + inodeNumInodesPerSector() - 1) / inodeNumInodesPerSector();
   unsigned int dataBeginSector = inodesBeginSector + inodesSectors;
 
-  // Alinha dataBeginSector com o tamanho do cluster
   unsigned int sectorsPerCluster = blockSize / DISK_SECTORDATASIZE;
   unsigned int misalignment = dataBeginSector % sectorsPerCluster;
   if (misalignment != 0) {
     dataBeginSector += sectorsPerCluster - misalignment;
   }
 
-  // Valida se há espaço suficiente para dados
   if (dataBeginSector >= totalSectors) {
     printf("\n!! Error: No space for data after metadata. Disk ID: %d\n",
            diskGetId(d));
@@ -239,7 +226,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     return -1;
   }
 
-  // Calcula clusters disponíveis
   unsigned long dataSectors = totalSectors - dataBeginSector;
   unsigned int totalClusters = dataSectors / sectorsPerCluster;
 
@@ -257,7 +243,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
   printf("\n   - Data: %u clusters (%lu sectors)\n", totalClusters,
          dataSectors);
 
-  // ========== INICIALIZACAO DE SETORES DE METADATA ==========
   printf("\n-- Initializing metadata sectors...");
   for (unsigned long i = 0; i < dataBeginSector; i++) {
     unsigned char emptySector[DISK_SECTORDATASIZE] = {0};
@@ -268,12 +253,10 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     }
   }
 
-  // ========== INICIALIZACAO DE SETORES DE DADOS (FREE LIST) ==========
   printf("\n-- Initializing data sectors and free list...");
   for (unsigned long i = dataBeginSector; i < totalSectors; i++) {
     unsigned char emptySector[DISK_SECTORDATASIZE] = {0};
 
-    // No início de cada cluster, cria header da lista de clusters livres
     if ((i - dataBeginSector) % sectorsPerCluster == 0) {
       FreeClusterHeader header;
       header.nextClusterAddress = i + sectorsPerCluster;
@@ -288,7 +271,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     }
   }
 
-  // ========== CRIACAO E GRAVACAO DO SUPERBLOCO ==========
   printf("\n-- Writing superblock...");
   SuperBlock superblock;
   superblock.numInodes = numInodes;
@@ -307,7 +289,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     return -1;
   }
 
-  // ========== CRIACAO DE INODES VAZIOS ==========
   printf("\n-- Creating %d empty inodes...", numInodes);
   for (unsigned int i = 0; i < numInodes; i++) {
     Inode *inode = inodeCreate(i + 1, d);
@@ -319,10 +300,8 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     free(inode);
   }
 
-  // ========== CRIACAO DO DIRETORIO ROOT ==========
   printf("\n-- Creating root directory...");
 
-  // Carrega inode do ROOT
   Inode *rootInode = inodeLoad(ROOT_INODE, d);
   if (rootInode == NULL) {
     printf("\n!! Error: Failed to load root inode. Disk ID: %d\n",
@@ -330,12 +309,11 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
     return -1;
   }
 
-  // Configura atributos do ROOT (sem subdiretórios)
   inodeSetFileType(rootInode, FILETYPE_DIR);
   inodeSetOwner(rootInode, 0);
   inodeSetGroupOwner(rootInode, 0);
   inodeSetPermission(rootInode, 0);
-  inodeSetRefCount(rootInode, 1); // Apenas o diretório root em si
+  inodeSetRefCount(rootInode, 1);
 
   if (inodeSave(rootInode) != 0) {
     printf("\n!! Error: Failed to save root inode. Disk ID: %d\n",
@@ -346,8 +324,6 @@ int myFSFormat(Disk *d, unsigned int blockSize) {
 
   free(rootInode);
 
-  // ========== CALCULO DE BLOCOS DISPONIVEIS ==========
-  // Todos os clusters estão disponíveis (root não ocupa clusters de dados)
   unsigned long availableClusters = superblock.dataLastCluster;
 
   if (availableClusters == 0) {
@@ -643,7 +619,7 @@ int myFSRead(int fd, char *buf, unsigned int nbytes)
   if (cursor >= fileSize)
   {
     free(inode);
-    return 0; // EOF
+    return 0;
   }
 
   unsigned int canRead = fileSize - cursor;
@@ -751,8 +727,6 @@ int myFSWrite(int fd, const char *buf, unsigned int nbytes) {
     unsigned int blockIndex = pos / blockSize;
     unsigned int offInBlock = pos % blockSize;
 
-    // Garantir que existe bloco para esse blockIndex:
-    // número de blocos atuais (arredonda pra cima)
     unsigned int blocksNow = (fileSize + blockSize - 1) / blockSize;
 
     while (blockIndex >= blocksNow) {
@@ -779,7 +753,6 @@ int myFSWrite(int fd, const char *buf, unsigned int nbytes) {
       return -1;
     }
 
-    // Se escrita não cobre o bloco inteiro, fazemos read-modify-write
     unsigned int remaining = nbytes - written;
     unsigned int chunk = blockSize - offInBlock;
     if (chunk > remaining)
@@ -805,7 +778,6 @@ int myFSWrite(int fd, const char *buf, unsigned int nbytes) {
 
     written += chunk;
 
-    // Se ultrapassou o tamanho, atualiza
     unsigned int endPos = cursor + written;
     if (endPos > fileSize)
       fileSize = endPos;
@@ -813,7 +785,6 @@ int myFSWrite(int fd, const char *buf, unsigned int nbytes) {
 
   free(blockBuf);
 
-  // Atualiza cursor e tamanho do arquivo no inode
   openFiles[idx].cursor += written;
   inodeSetFileSize(inode, fileSize);
 
@@ -885,8 +856,8 @@ int myFSCloseDir(int fd) { return -1; }
 // o sistema de arquivos tenha sido registrado com sucesso.
 // Caso contrario, retorna -1
 int installMyFS(void) {
-  static FSInfo fs;              // Persistente
-  static char fsname[] = "myfs"; // Persistente
+  static FSInfo fs;              
+  static char fsname[] = "myfs"; 
 
   // Zerar toda a estrutura
   memset(&fs, 0, sizeof(FSInfo));

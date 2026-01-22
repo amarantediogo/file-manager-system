@@ -405,40 +405,184 @@ int myFSxMount(Disk *d, int x) {
   return 0;
 }
 
+// Retorna: 1 achou, 0 não achou, -1 erro.
+static int rootFindEntry(Disk *d, SuperBlock *sb, const char *name, unsigned int *outInumber) {
+  if (!d || !sb || !name || !outInumber) return -1;
+
+  Inode *root = inodeLoad(ROOT_INODE, d);
+  if (!root) return -1;
+
+  unsigned int dirSize = inodeGetFileSize(root);
+  if (dirSize == 0) { free(root); return 0; }
+
+  const unsigned int entrySize = (unsigned int)sizeof(DirEntry);
+  if (entrySize == 0) { free(root); return -1; }
+
+  unsigned int blockSize = sb->blockSize;
+  unsigned char *blockBuf = (unsigned char*)malloc(blockSize);
+  if (!blockBuf) { free(root); return -1; }
+
+  unsigned int offset = 0;
+  while (offset + entrySize <= dirSize) {
+    unsigned int blockIndex = offset / blockSize;
+    unsigned int offInBlock = offset % blockSize;
+
+    unsigned long int blockAddr = inodeGetBlockAddr(root, blockIndex);
+    if (blockAddr == 0) { free(blockBuf); free(root); return -1; }
+
+    if (readBlock(d, blockAddr, blockSize, blockBuf) != 0) {
+      free(blockBuf); free(root); return -1;
+    }
+
+    DirEntry ent;
+    if (offInBlock + entrySize <= blockSize) {
+      memcpy(&ent, blockBuf + offInBlock, entrySize);
+    } else {
+      // parte 1
+      unsigned int part1 = blockSize - offInBlock;
+      memcpy(&ent, blockBuf + offInBlock, part1);
+
+      unsigned long int nextAddr = inodeGetBlockAddr(root, blockIndex + 1);
+      if (nextAddr == 0) { free(blockBuf); free(root); return -1; }
+      if (readBlock(d, nextAddr, blockSize, blockBuf) != 0) {
+        free(blockBuf); free(root); return -1;
+      }
+      memcpy(((unsigned char*)&ent) + part1, blockBuf, entrySize - part1);
+    }
+
+    ent.name[MAX_FILENAME_LENGTH] = '\0';
+    if (strncmp(ent.name, name, MAX_FILENAME_LENGTH) == 0) {
+      *outInumber = ent.inodeNumber;
+      free(blockBuf);
+      free(root);
+      return 1;
+    }
+
+    offset += entrySize;
+  }
+
+  free(blockBuf);
+  free(root);
+  return 0;
+}
+
+// Anexa uma nova entrada no diretório raiz.
+// Retorna 0 ok, -1 erro.
+static int rootAppendEntry(Disk *d, SuperBlock *sb, const char *name, unsigned int inumber) {
+  if (!d || !sb || !name || inumber == 0) return -1;
+
+  Inode *root = inodeLoad(ROOT_INODE, d);
+  if (!root) return -1;
+
+  unsigned int blockSize = sb->blockSize;
+  unsigned int fileSize = inodeGetFileSize(root);
+
+  DirEntry ent;
+  memset(&ent, 0, sizeof(ent));
+  ent.inodeNumber = inumber;
+  strncpy(ent.name, name, MAX_FILENAME_LENGTH);
+  ent.name[MAX_FILENAME_LENGTH] = '\0';
+
+  const unsigned char *src = (const unsigned char*)&ent;
+  unsigned int total = (unsigned int)sizeof(DirEntry);
+  unsigned int written = 0;
+
+  unsigned char *blockBuf = (unsigned char*)malloc(blockSize);
+  if (!blockBuf) { free(root); return -1; }
+
+  while (written < total) {
+    unsigned int pos = fileSize + written;
+    unsigned int blockIndex = pos / blockSize;
+    unsigned int offInBlock = pos % blockSize;
+
+    unsigned int blocksNow = (fileSize + blockSize - 1) / blockSize;
+    if (fileSize == 0) blocksNow = 0;
+
+    while (blockIndex >= blocksNow) {
+      unsigned long int newBlockAddr = allocateFreeCluster(d, sb);
+      if (newBlockAddr == 0) { free(blockBuf); free(root); return -1; }
+      if (inodeAddBlock(root, newBlockAddr) != 0) { free(blockBuf); free(root); return -1; }
+      blocksNow++;
+    }
+
+    unsigned long int blockAddr = inodeGetBlockAddr(root, blockIndex);
+    if (blockAddr == 0) { free(blockBuf); free(root); return -1; }
+
+    unsigned int remaining = total - written;
+    unsigned int chunk = blockSize - offInBlock;
+    if (chunk > remaining) chunk = remaining;
+
+    if (offInBlock != 0 || chunk != blockSize) {
+      if (readBlock(d, blockAddr, blockSize, blockBuf) != 0) {
+        free(blockBuf); free(root); return -1;
+      }
+    } else {
+      memset(blockBuf, 0, blockSize);
+    }
+
+    memcpy(blockBuf + offInBlock, src + written, chunk);
+
+    if (writeBlock(d, blockAddr, blockSize, blockBuf) != 0) {
+      free(blockBuf); free(root); return -1;
+    }
+
+    written += chunk;
+  }
+
+  free(blockBuf);
+
+  inodeSetFileSize(root, fileSize + total);
+  if (inodeSave(root) != 0) { free(root); return -1; }
+
+  free(root);
+  return 0;
+}
+
+
 // Funcao para abertura de um arquivo, a partir do caminho especificado
 // em path, no disco montado especificado em d, no modo Read/Write,
 // criando o arquivo se nao existir. Retorna um descritor de arquivo,
 // em caso de sucesso. Retorna -1, caso contrario.
 int myFSOpen(Disk *d, const char *path) {
-  if (!d || !path)
-    return -1;
-
-  if (!myfsMounted)
-    return -1;
+  if (!d || !path) return -1;
+  if (!myfsMounted) return -1;
 
   initFileDescriptors();
 
-  if (strlen(path) == 0)
-    return -1;
+  char name[MAX_FILENAME_LENGTH + 1];
 
-  unsigned int inumber = inodeFindFreeInode(ROOT_INODE + 1, d);
-  if (inumber == 0)
-    return -1;
+  size_t len = strlen(path);
+  if (len > MAX_FILENAME_LENGTH) return -1;
 
-  Inode *fileInode = inodeCreate(inumber, d);
-  if (!fileInode)
-    return -1;
+  memcpy(name, path, len);
+  name[len] = '\0';
 
-  inodeSetFileType(fileInode, FILETYPE_REGULAR);
-  inodeSetFileSize(fileInode, 0);
-  inodeSetRefCount(fileInode, 1);
+  SuperBlock sb;
+  if (readSuperBlock(d, &sb) != 0) return -1;
 
-  if (inodeSave(fileInode) < 0) {
+  unsigned int inumber = 0;
+  int found = rootFindEntry(d, &sb, name, &inumber);
+  if (found < 0) return -1;
+
+  if (found == 0) {
+    inumber = inodeFindFreeInode(ROOT_INODE + 1, d);
+    if (inumber == 0) return -1;
+
+    Inode *fileInode = inodeCreate(inumber, d);
+    if (!fileInode) return -1;
+
+    inodeSetFileType(fileInode, FILETYPE_REGULAR);
+    inodeSetFileSize(fileInode, 0);
+    inodeSetRefCount(fileInode, 1);
+
+    if (inodeSave(fileInode) < 0) {
+      free(fileInode);
+      return -1;
+    }
     free(fileInode);
-    return -1;
-  }
 
-  free(fileInode);
+    if (rootAppendEntry(d, &sb, name, inumber) != 0) return -1;
+  }
 
   for (int i = 0; i < MAX_FDS; i++) {
     if (!openFiles[i].used) {
@@ -452,6 +596,7 @@ int myFSOpen(Disk *d, const char *path) {
 
   return -1;
 }
+
 
 // Funcao para a leitura de um arquivo, a partir de um descritor de arquivo
 // existente. Os dados devem ser lidos a partir da posicao atual do cursor
@@ -546,7 +691,7 @@ int myFSRead(int fd, char *buf, unsigned int nbytes)
   }
 
   free(blockBuf);
-
+  
   free(inode);
   return (int)readBytes;
 }
